@@ -1,0 +1,576 @@
+{
+  "info": {
+    "_postman_id": "0f5122a6-6e6f-4e44-911e-cefd7d3f69a0",
+    "name": "Blacklist API",
+    "description": "Pruebas de la API REST de lista negra de emails desplegada en Elastic Beanstalk.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "32076961"
+  },
+  "item": [
+    {
+      "name": "Health check",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', function () { pm.response.to.have.status(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            ""
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "Health check",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                ""
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "JSON",
+          "header": [
+            {
+              "key": "Date",
+              "value": "Mon, 12 Oct 2026 20:41:00 GMT",
+              "type": "text"
+            },
+            {
+              "key": "Content-Type",
+              "value": "application/json",
+              "type": "text"
+            },
+            {
+              "key": "Content-Length",
+              "value": "16",
+              "type": "text"
+            },
+            {
+              "key": "Connection",
+              "value": "keep-alive",
+              "type": "text"
+            },
+            {
+              "key": "Server",
+              "value": "nginx",
+              "type": "text"
+            }
+          ],
+          "cookie": [],
+          "body": "{\n    \"status\": \"ok\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Agregar email a la lista negra",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 201 (o 409 si ya existia)', function () { pm.expect(pm.response.code).to.be.oneOf([201, 409]); });",
+              "pm.test('Trae mensaje', function () { pm.expect(pm.response.json()).to.have.property('msg'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{email}}\",\n  \"app_uuid\": \"{{app_uuid}}\",\n  \"blocked_reason\": \"Fraude detectado en la cuenta\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/blacklists",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "blacklists"
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "Agregar email a la lista negra",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"app_uuid\": \"{{app_uuid}}\",\n  \"blocked_reason\": \"Fraude detectado en la cuenta\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/blacklists",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "blacklists"
+              ]
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "_postman_previewlanguage": "JSON",
+          "header": [
+            {
+              "key": "Date",
+              "value": "Mon, 12 Oct 2026 20:42:21 GMT",
+              "type": "text"
+            },
+            {
+              "key": "Content-Type",
+              "value": "application/json",
+              "type": "text"
+            },
+            {
+              "key": "Content-Length",
+              "value": "66",
+              "type": "text"
+            },
+            {
+              "key": "Connection",
+              "value": "keep-alive",
+              "type": "text"
+            },
+            {
+              "key": "Server",
+              "value": "nginx",
+              "type": "text"
+            }
+          ],
+          "cookie": [],
+          "body": "{\n    \"msg\": \"El email prueba@gmail.com fue agregado a la lista negra\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Consultar email en la lista negra",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Esta en la lista negra', function () { pm.expect(pm.response.json().is_blacklisted).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/blacklists/{{email}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "blacklists",
+            "{{email}}"
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "Consultar email en la lista negra",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/blacklists/{{email}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "blacklists",
+                "{{email}}"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "JSON",
+          "header": [
+            {
+              "key": "Date",
+              "value": "Mon, 12 Oct 2026 20:43:16 GMT",
+              "type": "text"
+            },
+            {
+              "key": "Content-Type",
+              "value": "application/json",
+              "type": "text"
+            },
+            {
+              "key": "Content-Length",
+              "value": "73",
+              "type": "text"
+            },
+            {
+              "key": "Connection",
+              "value": "keep-alive",
+              "type": "text"
+            },
+            {
+              "key": "Server",
+              "value": "nginx",
+              "type": "text"
+            }
+          ],
+          "cookie": [],
+          "body": "{\n    \"blocked_reason\": \"Fraude detectado en la cuenta\",\n    \"is_blacklisted\": true\n}"
+        }
+      ]
+    },
+    {
+      "name": "Consultar email que no esta en la lista",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('No esta en la lista negra', function () { pm.expect(pm.response.json().is_blacklisted).to.be.false; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/blacklists/noexiste@ejemplo.com",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "blacklists",
+            "noexiste@ejemplo.com"
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "Consultar email que no esta en la lista",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/blacklists/noexiste@ejemplo.com",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "blacklists",
+                "noexiste@ejemplo.com"
+              ]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "JSON",
+          "header": [
+            {
+              "key": "Date",
+              "value": "Mon, 12 Oct 2026 20:44:16 GMT",
+              "type": "text"
+            },
+            {
+              "key": "Content-Type",
+              "value": "application/json",
+              "type": "text"
+            },
+            {
+              "key": "Content-Length",
+              "value": "47",
+              "type": "text"
+            },
+            {
+              "key": "Connection",
+              "value": "keep-alive",
+              "type": "text"
+            },
+            {
+              "key": "Server",
+              "value": "nginx",
+              "type": "text"
+            }
+          ],
+          "cookie": [],
+          "body": "{\n    \"blocked_reason\": null,\n    \"is_blacklisted\": false\n}"
+        }
+      ]
+    },
+    {
+      "name": "Agregar con datos invalidos (400)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 400', function () { pm.response.to.have.status(400); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"no-es-un-email\",\n  \"app_uuid\": \"123\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/blacklists",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "blacklists"
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "Agregar con datos invalidos (400)",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"no-es-un-email\",\n  \"app_uuid\": \"123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/blacklists",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "blacklists"
+              ]
+            }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "_postman_previewlanguage": "JSON",
+          "header": [
+            {
+              "key": "Date",
+              "value": "Mon, 12 Oct 2026 20:44:24 GMT",
+              "type": "text"
+            },
+            {
+              "key": "Content-Type",
+              "value": "application/json",
+              "type": "text"
+            },
+            {
+              "key": "Content-Length",
+              "value": "110",
+              "type": "text"
+            },
+            {
+              "key": "Connection",
+              "value": "keep-alive",
+              "type": "text"
+            },
+            {
+              "key": "Server",
+              "value": "nginx",
+              "type": "text"
+            }
+          ],
+          "cookie": [],
+          "body": "{\n    \"errors\": {\n        \"app_uuid\": [\n            \"Not a valid UUID.\"\n        ],\n        \"email\": [\n            \"Not a valid email address.\"\n        ]\n    },\n    \"msg\": \"Datos inválidos\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Consultar sin token (401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 401', function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "noauth"
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/blacklists/{{email}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "blacklists",
+            "{{email}}"
+          ]
+        }
+      },
+      "response": [
+        {
+          "name": "Consultar sin token (401)",
+          "originalRequest": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/blacklists/{{email}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "blacklists",
+                "{{email}}"
+              ]
+            }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "_postman_previewlanguage": "JSON",
+          "header": [
+            {
+              "key": "Date",
+              "value": "Mon, 12 Oct 2026 20:44:32 GMT",
+              "type": "text"
+            },
+            {
+              "key": "Content-Type",
+              "value": "application/json",
+              "type": "text"
+            },
+            {
+              "key": "Content-Length",
+              "value": "53",
+              "type": "text"
+            },
+            {
+              "key": "Connection",
+              "value": "keep-alive",
+              "type": "text"
+            },
+            {
+              "key": "Server",
+              "value": "nginx",
+              "type": "text"
+            }
+          ],
+          "cookie": [],
+          "body": "{\n    \"msg\": \"Token de autorización inválido o ausente\"\n}"
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://blacklist-api-env.eba-tp3myqmp.us-east-2.elasticbeanstalk.com",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "NIx29FEZsTT0s3fEE",
+      "type": "string"
+    },
+    {
+      "key": "email",
+      "value": "teban0130@gmail.com",
+      "type": "string"
+    },
+    {
+      "key": "app_uuid",
+      "value": "6f1c2a8e-3b7d-4c55-9a0e-1f2b3c4d5e6f",
+      "type": "string"
+    }
+  ]
+}
