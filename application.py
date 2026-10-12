@@ -25,6 +25,7 @@ application = Flask(__name__)
 application.config['SQLALCHEMY_DATABASE_URI'] = database_uri()
 application.json.ensure_ascii = False
 
+APP_VERSION = "v2"
 AUTH_TOKEN = os.environ.get('AUTH_TOKEN', 'token-local-desarrollo')
 
 db.init_app(application)
@@ -49,7 +50,7 @@ def client_ip() -> str:
 @application.route("/")
 def health():
     # Beanstalk revisa la salud del entorno haciendo GET a "/"
-    return jsonify({'status': 'ok'})
+    return jsonify({'status': 'ok', 'version': APP_VERSION})
 
 
 @application.route("/blacklists", methods=['POST'])
