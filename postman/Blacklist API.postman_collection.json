@@ -554,7 +554,7 @@
   "variable": [
     {
       "key": "base_url",
-      "value": "http://blacklist-api-env.eba-tp3myqmp.us-east-2.elasticbeanstalk.com",
+      "value": "http://blacklist-api-lb.eba-69qxriar.us-east-2.elasticbeanstalk.com",
       "type": "string"
     },
     {
