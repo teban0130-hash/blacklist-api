@@ -1,0 +1,357 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Entregable - API REST de lista negra de emails (Flask) en Elastic Beanstalk
+  (Load Balanced con ALB, ASG de 3 a 6 instancias, Python en Amazon Linux 2023)
+  con base de datos PostgreSQL en RDS.
+  Requisito previo: subir app.zip a un bucket de S3 de la misma region.
+
+Parameters:
+  RoleName:
+    Type: String
+    Default: Blacklist_Instance_Profile_EC2
+    Description: >-
+      Nombre del rol IAM y del Instance Profile. Distinto al del tutorial para
+      no chocar con el que ya existe.
+    AllowedPattern: "[\\w+=,.@-]+"
+    MinLength: 1
+    MaxLength: 64
+  ApplicationName:
+    Type: String
+    Default: blacklist-api
+    Description: Nombre de la aplicacion de Elastic Beanstalk.
+    MaxLength: 100
+  EnvironmentName:
+    Type: String
+    Default: blacklist-api-lb
+    Description: >-
+      Nombre del entorno (4-40 caracteres; letras, numeros y guiones). Cambiarlo
+      reemplaza el entorno; es necesario para cambiar el tipo de load balancer.
+    AllowedPattern: "[a-zA-Z0-9][a-zA-Z0-9-]{2,38}[a-zA-Z0-9]"
+  PlatformName:
+    Type: String
+    Default: Python 3.14 running on 64bit Amazon Linux 2023
+    Description: Nombre de la plataforma de Beanstalk.
+  PlatformVersion:
+    Type: String
+    Default: 4.13.10
+    Description: >-
+      Version de la plataforma. Si no existe en tu region, cambiala por una
+      disponible (aws elasticbeanstalk list-platform-versions).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC donde se lanzan la instancia y la base de datos (la VPC por defecto).
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      Subredes publicas de esa VPC, en al menos 2 AZ distintas (RDS lo exige).
+      Usa solo AZ que soporten t3.micro/t3.small (en us-east-1, evita us-east-1e).
+  SourceBundleBucket:
+    Type: String
+    Default: cursodevopsuniandes-equipo-devops-students
+    Description: Bucket de S3 donde subiste app.zip (el que crea s3-bucket.yaml).
+  SourceBundleKey:
+    Type: String
+    Default: app.zip
+    Description: >-
+      Ruta del zip dentro del bucket. Para desplegar una version nueva, sube el
+      zip con otro nombre (app-v2.zip) y actualiza el stack con ese valor.
+  AuthToken:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Token estatico (Bearer) que exige la API. Minimo 16 caracteres.
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: Tipo de instancia de RDS.
+  DBEngineVersion:
+    Type: String
+    Default: "17"
+    Description: Version mayor de PostgreSQL.
+  MinInstances:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: Minimo de instancias del Auto Scaling Group.
+  MaxInstances:
+    Type: Number
+    Default: 6
+    MinValue: 1
+    Description: Maximo de instancias del Auto Scaling Group.
+  DeploymentPolicy:
+    Type: String
+    Default: AllAtOnce
+    AllowedValues:
+      - AllAtOnce
+      - Rolling
+      - RollingWithAdditionalBatch
+      - Immutable
+      - TrafficSplitting
+    Description: >-
+      Estrategia de despliegue de Beanstalk. Cambiala en cada actualizacion del
+      stack para probar las distintas estrategias.
+  DeploymentBatchSize:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: >-
+      Instancias por lote en Rolling y RollingWithAdditionalBatch.
+  TrafficSplittingPercent:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+    Description: Porcentaje de trafico que recibe la version nueva en TrafficSplitting.
+  TrafficSplittingEvaluationTime:
+    Type: Number
+    Default: 5
+    MinValue: 3
+    MaxValue: 600
+    Description: Minutos que se evalua la version nueva antes de pasarle todo el trafico.
+
+Resources:
+  # ---------------- Rol del perfil de instancia EC2 ----------------
+  EBInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Allows EC2 instances to call AWS services on your behalf.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+        # Permite el tunel de Session Manager hacia la base de datos
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SourceBundleRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${SourceBundleBucket}/*"
+
+  EBInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Ref RoleName
+      Roles:
+        - !Ref EBInstanceRole
+
+  # ---------------- Red: grupos de seguridad ----------------
+  # Se asigna a la EC2 (ademas del que crea Beanstalk para el puerto 80).
+  # No abre puertos; solo identifica a la instancia ante la base de datos.
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Instancia EC2 de la API de lista negra
+      VpcId: !Ref VpcId
+
+  # La base de datos solo acepta conexiones en 5432 desde la instancia de la API
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL de la API de lista negra
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  # ---------------- Base de datos PostgreSQL (RDS) ----------------
+  # Usuario y contrasena generados automaticamente y guardados en Secrets Manager
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Credenciales de la base de datos de la API de lista negra
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "blacklist_admin"}'
+        GenerateStringKey: password
+        PasswordLength: 24
+        ExcludePunctuation: true
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subredes de la base de datos de la API de lista negra
+      SubnetIds: !Ref SubnetIds
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    # Al borrar el stack se borra la base sin snapshot (evita costos en el taller)
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Engine: postgres
+      EngineVersion: !Ref DBEngineVersion
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: "20"
+      StorageType: gp3
+      DBName: blacklist
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 0
+      DeletionProtection: false
+
+  # ---------------- Aplicacion, version y entorno ----------------
+  EBApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: !Ref ApplicationName
+      Description: API REST de lista negra global de emails
+
+  EBApplicationVersion:
+    Type: AWS::ElasticBeanstalk::ApplicationVersion
+    Properties:
+      ApplicationName: !Ref EBApplication
+      Description: !Sub "Codigo desde s3://${SourceBundleBucket}/${SourceBundleKey}"
+      SourceBundle:
+        S3Bucket: !Ref SourceBundleBucket
+        S3Key: !Ref SourceBundleKey
+
+  EBEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref EBApplication
+      EnvironmentName: !Ref EnvironmentName
+      Description: Entorno Web Server - Single Instance
+      PlatformArn: !Sub "arn:aws:elasticbeanstalk:${AWS::Region}::platform/${PlatformName}/${PlatformVersion}"
+      VersionLabel: !Ref EBApplicationVersion
+      Tier:
+        Name: WebServer
+        Type: Standard
+      OptionSettings:
+        # Entorno Load Balanced con Application Load Balancer
+        # (TrafficSplitting solo funciona con ALB)
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: EnvironmentType
+          Value: LoadBalanced
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: LoadBalancerType
+          Value: application
+        # Auto Scaling Group
+        - Namespace: aws:autoscaling:asg
+          OptionName: MinSize
+          Value: !Ref MinInstances
+        - Namespace: aws:autoscaling:asg
+          OptionName: MaxSize
+          Value: !Ref MaxInstances
+        # Health check del ALB contra GET / (no exige token)
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: HealthCheckPath
+          Value: /
+        - Namespace: aws:elasticbeanstalk:environment:process:default
+          OptionName: MatcherHTTPCode
+          Value: "200"
+        - Namespace: aws:elasticbeanstalk:healthreporting:system
+          OptionName: SystemType
+          Value: enhanced
+        # Estrategia de despliegue
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: DeploymentPolicy
+          Value: !Ref DeploymentPolicy
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: BatchSizeType
+          Value: Fixed
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: BatchSize
+          Value: !Ref DeploymentBatchSize
+        - Namespace: aws:elasticbeanstalk:trafficsplitting
+          OptionName: NewVersionPercent
+          Value: !Ref TrafficSplittingPercent
+        - Namespace: aws:elasticbeanstalk:trafficsplitting
+          OptionName: EvaluationTime
+          Value: !Ref TrafficSplittingEvaluationTime
+        # Perfil de instancia EC2 y grupo de seguridad con acceso a la base
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: !Ref EBInstanceProfile
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: SecurityGroups
+          Value: !Ref AppSecurityGroup
+        # Disco raiz: General Purpose 3 (SSD), 10 GB, 3000 IOPS, 125 MiB/s
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: RootVolumeType
+          Value: gp3
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: RootVolumeSize
+          Value: "10"
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: RootVolumeIOPS
+          Value: "3000"
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: RootVolumeThroughput
+          Value: "125"
+        # Arquitectura y tipos de instancia
+        - Namespace: aws:ec2:instances
+          OptionName: SupportedArchitectures
+          Value: x86_64
+        - Namespace: aws:ec2:instances
+          OptionName: InstanceTypes
+          Value: t3.micro,t3.small
+        # Red: VPC y subredes publicas
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !Ref VpcId
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value: !Join [",", !Ref SubnetIds]
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBSubnets
+          Value: !Join [",", !Ref SubnetIds]
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBScheme
+          Value: public
+        - Namespace: aws:ec2:vpc
+          OptionName: AssociatePublicIpAddress
+          Value: "true"
+        # Variables de entorno que lee application.py
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: AUTH_TOKEN
+          Value: !Ref AuthToken
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_HOSTNAME
+          Value: !GetAtt Database.Endpoint.Address
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_PORT
+          Value: !GetAtt Database.Endpoint.Port
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_DB_NAME
+          Value: blacklist
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_USERNAME
+          Value: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:username}}"
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_PASSWORD
+          Value: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:password}}"
+
+Outputs:
+  ApplicationName:
+    Description: Aplicacion de Elastic Beanstalk
+    Value: !Ref EBApplication
+  EnvironmentName:
+    Description: Entorno de Elastic Beanstalk
+    Value: !Ref EBEnvironment
+  EnvironmentURL:
+    Description: URL base de la API
+    Value: !Sub "http://${EBEnvironment.EndpointURL}"
+  DatabaseEndpoint:
+    Description: Endpoint de PostgreSQL (solo accesible desde la instancia)
+    Value: !GetAtt Database.Endpoint.Address
+  DBSecretArn:
+    Description: Secreto con el usuario y la contrasena de la base de datos
+    Value: !Ref DBSecret
+  RoleArn:
+    Description: ARN del rol IAM
+    Value: !GetAtt EBInstanceRole.Arn

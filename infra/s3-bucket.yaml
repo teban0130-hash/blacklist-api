@@ -1,0 +1,37 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Entregable - Bucket de S3 privado donde se sube el app.zip de la API de lista
+  negra antes de desplegar blacklist-stack.yaml.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: cursodevopsuniandes-equipo-devops-students
+    Description: Nombre del bucket de S3 (global y unico, 3-63 caracteres, minusculas).
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+
+Resources:
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      # Conserva las versiones anteriores de app.zip si se sobrescribe
+      VersioningConfiguration:
+        Status: Enabled
+
+Outputs:
+  BucketName:
+    Description: Nombre del bucket de S3 (parametro SourceBundleBucket de blacklist-stack.yaml)
+    Value: !Ref AppBucket
+  BucketArn:
+    Description: ARN del bucket de S3
+    Value: !GetAtt AppBucket.Arn
