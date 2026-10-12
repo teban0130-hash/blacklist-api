@@ -1,10 +1,11 @@
 {
   "info": {
-    "_postman_id": "0f5122a6-6e6f-4e44-911e-cefd7d3f69a0",
+    "_postman_id": "345d6ee7-bf04-4cd9-8307-43190840a4a4",
     "name": "Blacklist API",
     "description": "Pruebas de la API REST de lista negra de emails desplegada en Elastic Beanstalk.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "_exporter_id": "32076961"
+    "_exporter_id": "32076961",
+    "_collection_link": "https://go.postman.co/collection/32076961-345d6ee7-bf04-4cd9-8307-43190840a4a4?source=collection_link"
   },
   "item": [
     {
@@ -554,23 +555,19 @@
   "variable": [
     {
       "key": "base_url",
-      "value": "http://blacklist-api-lb.eba-69qxriar.us-east-2.elasticbeanstalk.com",
-      "type": "string"
+      "value": "http://blacklist-api-env.eba-tp3myqmp.us-east-2.elasticbeanstalk.com"
     },
     {
       "key": "token",
-      "value": "NIx29FEZsTT0s3fEE",
-      "type": "string"
+      "value": "NIx29FEZsTT0s3fEE"
     },
     {
       "key": "email",
-      "value": "teban0130@gmail.com",
-      "type": "string"
+      "value": "teban0130@gmail.com"
     },
     {
       "key": "app_uuid",
-      "value": "6f1c2a8e-3b7d-4c55-9a0e-1f2b3c4d5e6f",
-      "type": "string"
+      "value": "6f1c2a8e-3b7d-4c55-9a0e-1f2b3c4d5e6f"
     }
   ]
 }
