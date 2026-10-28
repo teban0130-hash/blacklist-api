@@ -83,7 +83,7 @@ def check_blacklist(email):
     if not is_authorized():
         return jsonify({'msg': 'Token de autorización inválido o ausente'}), 401
 
-    entry = Blacklist.query.filter_by(email=email).first()
+    entry = Blacklist.query.filter_by(email=email.lower()).first()
     return jsonify({
         'is_blacklisted': entry is not None,
         'blocked_reason': entry.blocked_reason if entry else None,
