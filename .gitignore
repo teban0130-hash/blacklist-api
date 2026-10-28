@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+.pytest_cache/
+*.db
+.coverage
+htmlcov/
+reports/
+# Los artefactos los genera CodeBuild (buildspec.yml)
+app*.zip

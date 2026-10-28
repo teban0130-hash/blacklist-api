@@ -1,0 +1,38 @@
+version: 0.2
+
+# ARTIFACT_BUCKET lo define el proyecto de CodeBuild (infra/ci-pipeline.yaml)
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - pip install -r requirements-dev.txt
+
+  build:
+    commands:
+      # Si alguna prueba falla, pytest termina con error y el build se detiene aquí:
+      # no se genera ni se sube el artefacto
+      - pytest -v --junitxml=reports/junit.xml --cov-report=xml:reports/coverage.xml
+      # Mismo contenido que se despliega en Beanstalk (ver README)
+      - zip -r app.zip .ebextensions application.py models.py requirements.txt
+      # Copia con el hash del commit en el nombre, lista para Beanstalk
+      - aws s3 cp app.zip "s3://${ARTIFACT_BUCKET}/builds/app-${CODEBUILD_RESOLVED_SOURCE_VERSION}.zip"
+
+# Resultados de pruebas y cobertura visibles en la consola de CodeBuild (pestaña Reports)
+reports:
+  pytest-reports:
+    files:
+      - junit.xml
+    base-directory: reports
+    file-format: JUNITXML
+  coverage-report:
+    files:
+      - coverage.xml
+    base-directory: reports
+    file-format: COBERTURAXML
+
+# Artefacto de salida que CodePipeline guarda en su bucket de S3
+artifacts:
+  files:
+    - app.zip

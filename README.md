@@ -45,8 +45,7 @@ Además del cuerpo, se guardan la IP de origen de la petición y la fecha y hora
 ```bash
 python -m venv venv
 venv\Scripts\activate          # Windows
-pip install -r requirements.txt pytest
-pytest
+pip install -r requirements-dev.txt
 python application.py          # http://localhost:5000
 ```
 
@@ -59,6 +58,32 @@ curl -X POST http://localhost:5000/blacklists \
 curl http://localhost:5000/blacklists/usuario@ejemplo.com \
   -H "Authorization: Bearer token-local-desarrollo"
 ```
+
+## Pruebas unitarias
+
+Las pruebas están en `tests/` y usan **pytest**. Cada endpoint tiene al menos un escenario, para que ante cualquier
+cambio se pueda validar rápidamente que la API sigue funcionando. No necesitan base de datos ni red: las llamadas
+a la base de datos se reemplazan por mocks (`unittest.mock.patch`) y la app se configura con SQLite en memoria.
+
+```bash
+pip install -r requirements-dev.txt   # dependencias de la API + pytest + pytest-cov
+pytest                                # corre todas las pruebas y muestra la cobertura
+pytest -v                             # detalle de cada prueba
+pytest tests/test_health.py           # solo un archivo
+pytest --cov-report=html              # reporte navegable en htmlcov/index.html
+```
+
+| Archivo | Endpoint | Escenarios |
+|---|---|---|
+| `tests/test_health.py` | `GET /` | 200 con estado y versión |
+| `tests/test_check_blacklist.py` | `GET /blacklists/<email>` | 200 en lista negra, 200 no está, 401 sin token |
+| `tests/test_add_to_blacklist.py` | `POST /blacklists` | 201 creado, 409 duplicado, 400 datos inválidos, 401 token inválido |
+
+`tests/conftest.py` define las variables de entorno de prueba (`DATABASE_URL`, `AUTH_TOKEN`) y las fixtures
+compartidas: `client` (cliente HTTP de Flask) y `auth_headers` (header `Authorization` válido).
+
+Al agregar un endpoint nuevo, crea `tests/test_<endpoint>.py` y cubre al menos el caso exitoso y los errores
+que devuelve. `requirements-dev.txt` no se incluye en el zip de despliegue.
 
 ## Despliegue en Elastic Beanstalk
 

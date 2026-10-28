@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Entrega 2 - Integracion continua de la API de lista negra: CodePipeline toma
+  cada commit de la rama principal en GitHub y lo construye con CodeBuild
+  (pruebas unitarias + generacion de app.zip en S3). No despliega (sin CD).
+  Despues de crear el stack, la conexion con GitHub queda en estado PENDING y
+  hay que autorizarla una vez en la consola (Developer Tools > Connections).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: blacklist-api-ci
+    Description: Prefijo de los recursos (proyecto de CodeBuild, pipeline, roles).
+    AllowedPattern: "[a-z0-9-]{3,24}"
+  GitHubRepository:
+    Type: String
+    Default: teban0130-hash/blacklist-api
+    Description: Repositorio de GitHub en formato propietario/nombre.
+  BranchName:
+    Type: String
+    Default: main
+    Description: Rama que dispara el pipeline en cada commit.
+
+Resources:
+  # ---------------- Bucket de artefactos ----------------
+  # Guarda los artefactos internos de CodePipeline y la copia builds/app-<commit>.zip
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-artifacts-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ---------------- Conexion con GitHub ----------------
+  # Se crea en estado PENDING; se autoriza a mano en la consola una sola vez
+  GitHubConnection:
+    Type: AWS::CodeConnections::Connection
+    Properties:
+      ConnectionName: !Sub "${ProjectName}-github"
+      ProviderType: GitHub
+
+  # ---------------- CodeBuild ----------------
+  BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/codebuild/${ProjectName}"
+      RetentionInDays: 14
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-codebuild-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Logs del build en CloudWatch
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${BuildLogGroup.Arn}:*"
+              # Leer el codigo que entrega CodePipeline y escribir el artefacto
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              # Reportes de pruebas y cobertura (seccion reports del buildspec)
+              - Effect: Allow
+                Action:
+                  - codebuild:CreateReportGroup
+                  - codebuild:CreateReport
+                  - codebuild:UpdateReport
+                  - codebuild:BatchPutTestCases
+                  - codebuild:BatchPutCodeCoverages
+                Resource: !Sub "arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/${ProjectName}-*"
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Ref ProjectName
+      Description: Pruebas unitarias y empaquetado de la API de lista negra
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      # El codigo y la salida los maneja CodePipeline; los pasos estan en buildspec.yml
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+      TimeoutInMinutes: 15
+
+  # ---------------- CodePipeline ----------------
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-pipeline-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Guardar y leer los artefactos entre etapas
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: !GetAtt ArtifactBucket.Arn
+              # Descargar el codigo de GitHub a traves de la conexion
+              - Effect: Allow
+                Action:
+                  - codeconnections:UseConnection
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnection
+              # Lanzar el build y consultar su estado
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt BuildProject.Arn
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref ProjectName
+      PipelineType: V2
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      # Se ejecuta automaticamente con cada push (commit) a la rama principal
+      Triggers:
+        - ProviderType: CodeStarSourceConnection
+          GitConfiguration:
+            SourceActionName: GitHub
+            Push:
+              - Branches:
+                  Includes:
+                    - !Ref BranchName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref GitHubConnection
+                FullRepositoryId: !Ref GitHubRepository
+                BranchName: !Ref BranchName
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Build
+          Actions:
+            - Name: TestAndPackage
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+
+Outputs:
+  ArtifactBucketName:
+    Description: Bucket con los artefactos (los zip quedan en builds/app-<commit>.zip)
+    Value: !Ref ArtifactBucket
+  GitHubConnectionArn:
+    Description: Conexion con GitHub (autorizarla en la consola si esta en PENDING)
+    Value: !Ref GitHubConnection
+  CodeBuildProjectName:
+    Description: Proyecto de CodeBuild
+    Value: !Ref BuildProject
+  PipelineName:
+    Description: Pipeline de CodePipeline
+    Value: !Ref Pipeline
+  PipelineConsoleURL:
+    Description: Enlace al pipeline en la consola de AWS
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${Pipeline}/view?region=${AWS::Region}"
