@@ -25,7 +25,7 @@ application = Flask(__name__)
 application.config['SQLALCHEMY_DATABASE_URI'] = database_uri()
 application.json.ensure_ascii = False
 
-APP_VERSION = "v5"
+APP_VERSION = "v6"
 AUTH_TOKEN = os.environ.get('AUTH_TOKEN', 'token-local-desarrollo')
 
 db.init_app(application)
