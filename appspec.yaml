@@ -6,5 +6,5 @@ Resources:
         # CodeDeploy reemplaza <TASK_DEFINITION> por la nueva revisión registrada
         TaskDefinition: <TASK_DEFINITION>
         LoadBalancerInfo:
-          ContainerName: "blacklist-api"
+          ContainerName: "blacklist-api-web"
           ContainerPort: 5000
