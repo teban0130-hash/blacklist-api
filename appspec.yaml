@@ -1,0 +1,10 @@
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        # CodeDeploy reemplaza <TASK_DEFINITION> por la nueva revisión registrada
+        TaskDefinition: <TASK_DEFINITION>
+        LoadBalancerInfo:
+          ContainerName: "blacklist-api"
+          ContainerPort: 5000

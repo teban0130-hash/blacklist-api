@@ -1,0 +1,367 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Entrega 3 - API de lista negra en ECS Fargate detras de un ALB, lista para
+  despliegues blue/green con CodeDeploy. Reutiliza la base de datos RDS y el
+  secreto creados por blacklist-stack.yaml (Elastic Beanstalk).
+  Orden de uso: 1) crear el stack con DesiredCount=0, 2) subir la imagen a ECR,
+  3) actualizar el stack con DesiredCount=1.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: blacklist-api
+    AllowedPattern: "[a-z0-9-]{3,24}"
+    Description: Prefijo de los recursos.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: La misma VPC donde esta el RDS.
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subredes publicas en al menos 2 AZ (para el ALB y las tareas).
+  DBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Output/recurso DBSecurityGroup de blacklist-stack (SG del RDS).
+  DBHost:
+    Type: String
+    Description: Endpoint del RDS (output DatabaseEndpoint de blacklist-stack).
+  DBSecretArn:
+    Type: String
+    Description: ARN del secreto con username/password (output DBSecretArn de blacklist-stack).
+  AuthToken:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Token Bearer que exige la API. Se guarda en Secrets Manager.
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Tag inicial de la imagen en ECR (luego lo cambia CodeDeploy).
+  DesiredCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: Dejar en 0 hasta que exista una imagen en ECR; luego 1 o 2.
+
+Resources:
+  # ---------------- ECR ----------------
+  Repository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    Properties:
+      RepositoryName: !Ref ProjectName
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  # ---------------- Secreto con el token de la API ----------------
+  AuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/auth-token"
+      SecretString: !Ref AuthToken
+
+  # ---------------- Seguridad ----------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB publico de la API de lista negra
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # 80 = trafico productivo, 8080 = listener de prueba de CodeDeploy
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Tareas Fargate de la API de lista negra
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  # Permite que las tareas lleguen al PostgreSQL existente
+  DBIngressFromTasks:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DBSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref TaskSecurityGroup
+      Description: Tareas Fargate de la API
+
+  # ---------------- Load balancer (dos target groups: blue y green) ----------------
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  TargetGroupBlue:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-blue"
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 5000
+      TargetType: ip
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: "200"
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "10"
+
+  TargetGroupGreen:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-green"
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 5000
+      TargetType: ip
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: "200"
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "10"
+
+  ProdListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupBlue
+
+  TestListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 8080
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupGreen
+
+  # ---------------- ECS ----------------
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-cluster"
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}"
+      RetentionInDays: 14
+
+  # ---------------- Roles IAM ----------------
+  # Rol de ejecucion: baja la imagen de ECR, escribe logs y lee los secretos
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-task-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      Policies:
+        - PolicyName: ReadSecrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AuthSecret
+                  - !Ref DBSecretArn
+
+  # Rol de la aplicacion (no necesita permisos adicionales)
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  CodeDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-codedeploy-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSCodeDeployRoleForECS"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref ProjectName
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: "256"
+      Memory: "512"
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref ProjectName
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}:${ImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 5000
+              Protocol: tcp
+          Environment:
+            - Name: RDS_HOSTNAME
+              Value: !Ref DBHost
+            - Name: RDS_PORT
+              Value: "5432"
+            - Name: RDS_DB_NAME
+              Value: blacklist
+          Secrets:
+            - Name: AUTH_TOKEN
+              ValueFrom: !Ref AuthSecret
+            - Name: RDS_USERNAME
+              ValueFrom: !Sub "${DBSecretArn}:username::"
+            - Name: RDS_PASSWORD
+              ValueFrom: !Sub "${DBSecretArn}:password::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ProdListener
+      - TestListener
+    Properties:
+      ServiceName: !Sub "${ProjectName}-service"
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      # CodeDeploy es quien controla los despliegues (blue/green)
+      DeploymentController:
+        Type: CODE_DEPLOY
+      HealthCheckGracePeriodSeconds: 30
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+      LoadBalancers:
+        - ContainerName: !Ref ProjectName
+          ContainerPort: 5000
+          TargetGroupArn: !Ref TargetGroupBlue
+
+  # ---------------- CodeDeploy ----------------
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${ProjectName}-cd"
+      ComputePlatform: ECS
+
+  DeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub "${ProjectName}-dg"
+      ServiceRoleArn: !GetAtt CodeDeployRole.Arn
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+      BlueGreenDeploymentConfiguration:
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+          WaitTimeInMinutes: 0
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 1
+      ECSServices:
+        - ClusterName: !Ref Cluster
+          ServiceName: !GetAtt Service.Name
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - TargetGroups:
+              - Name: !GetAtt TargetGroupBlue.TargetGroupName
+              - Name: !GetAtt TargetGroupGreen.TargetGroupName
+            ProdTrafficRoute:
+              ListenerArns:
+                - !Ref ProdListener
+            TestTrafficRoute:
+              ListenerArns:
+                - !Ref TestListener
+
+Outputs:
+  RepositoryUri:
+    Description: URI del repositorio ECR
+    Value: !GetAtt Repository.RepositoryUri
+  ApiUrl:
+    Description: URL base de la API en Fargate (usar en Postman)
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name
+  CodeDeployApplicationName:
+    Value: !Ref CodeDeployApplication
+  DeploymentGroupName:
+    Value: !Ref DeploymentGroup
+  TaskDefinitionFamily:
+    Value: !Ref ProjectName
+  TaskExecutionRoleArn:
+    Value: !GetAtt TaskExecutionRole.Arn
+  TaskRoleArn:
+    Value: !GetAtt TaskRole.Arn
+  CodeDeployRoleArn:
+    Value: !GetAtt CodeDeployRole.Arn
+  AuthSecretArn:
+    Value: !Ref AuthSecret

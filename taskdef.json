@@ -1,0 +1,35 @@
+{
+  "family": "blacklist-api",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/blacklist-api-task-execution-role",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/blacklist-api-task-role",
+  "containerDefinitions": [
+    {
+      "name": "blacklist-api",
+      "image": "<IMAGE1_NAME>",
+      "essential": true,
+      "portMappings": [{ "containerPort": 5000, "protocol": "tcp" }],
+      "environment": [
+        { "name": "RDS_HOSTNAME", "value": "<DB_HOST>" },
+        { "name": "RDS_PORT", "value": "5432" },
+        { "name": "RDS_DB_NAME", "value": "blacklist" }
+      ],
+      "secrets": [
+        { "name": "AUTH_TOKEN", "valueFrom": "<AUTH_SECRET_ARN>" },
+        { "name": "RDS_USERNAME", "valueFrom": "<DB_SECRET_ARN>:username::" },
+        { "name": "RDS_PASSWORD", "valueFrom": "<DB_SECRET_ARN>:password::" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/blacklist-api",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "api"
+        }
+      }
+    }
+  ]
+}

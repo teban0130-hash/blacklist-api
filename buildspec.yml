@@ -1,6 +1,8 @@
 version: 0.2
 
-# ARTIFACT_BUCKET lo define el proyecto de CodeBuild (infra/ci-pipeline.yaml)
+# Variables que define el proyecto de CodeBuild (infra/ci-pipeline.yaml):
+#   AWS_ACCOUNT_ID, AWS_DEFAULT_REGION, ECR_REPOSITORY_URI, DB_HOST,
+#   DB_SECRET_ARN, AUTH_SECRET_ARN
 
 phases:
   install:
@@ -9,15 +11,26 @@ phases:
     commands:
       - pip install -r requirements-dev.txt
 
+  pre_build:
+    commands:
+      # Si alguna prueba falla el build se detiene aquí: no se construye ni se sube imagen
+      - pytest -v --junitxml=reports/junit.xml --cov-report=xml:reports/coverage.xml
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      - IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-8)
+
   build:
     commands:
-      # Si alguna prueba falla, pytest termina con error y el build se detiene aquí:
-      # no se genera ni se sube el artefacto
-      - pytest -v --junitxml=reports/junit.xml --cov-report=xml:reports/coverage.xml
-      # Mismo contenido que se despliega en Beanstalk (ver README)
-      - zip -r app.zip .ebextensions application.py models.py requirements.txt
-      # Copia con el hash del commit en el nombre, lista para Beanstalk
-      - aws s3 cp app.zip "s3://${ARTIFACT_BUCKET}/builds/app-${CODEBUILD_RESOLVED_SOURCE_VERSION}.zip"
+      - docker build -t "${ECR_REPOSITORY_URI}:${IMAGE_TAG}" -t "${ECR_REPOSITORY_URI}:latest" .
+
+  post_build:
+    commands:
+      - docker push "${ECR_REPOSITORY_URI}:${IMAGE_TAG}"
+      # latest solo sirve para el primer arranque del servicio; CodeDeploy usa el tag del commit
+      - docker push "${ECR_REPOSITORY_URI}:latest"
+      # Archivo que lee CodeDeploy para reemplazar <IMAGE1_NAME> en taskdef.json
+      - printf '{"ImageURI":"%s"}' "${ECR_REPOSITORY_URI}:${IMAGE_TAG}" > imageDetail.json
+      # Completa los datos del ambiente en la definición de tarea
+      - sed -i -e "s|<ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g" -e "s|<REGION>|${AWS_DEFAULT_REGION}|g" -e "s|<DB_HOST>|${DB_HOST}|g" -e "s|<DB_SECRET_ARN>|${DB_SECRET_ARN}|g" -e "s|<AUTH_SECRET_ARN>|${AUTH_SECRET_ARN}|g" taskdef.json
 
 # Resultados de pruebas y cobertura visibles en la consola de CodeBuild (pestaña Reports)
 reports:
@@ -32,7 +45,9 @@ reports:
     base-directory: reports
     file-format: COBERTURAXML
 
-# Artefacto de salida que CodePipeline guarda en su bucket de S3
+# Artefactos que consume la etapa Deploy (CodeDeploy blue/green sobre ECS)
 artifacts:
   files:
-    - app.zip
+    - imageDetail.json
+    - taskdef.json
+    - appspec.yaml
